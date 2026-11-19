@@ -16,8 +16,6 @@
 
 package dev.ohs.fhir.fhirpath
 
-import com.ionspin.kotlin.bignum.decimal.BigDecimal
-import com.ionspin.kotlin.bignum.decimal.toBigDecimal
 import dev.ohs.fhir.fhirpath.functions.invoke
 import dev.ohs.fhir.fhirpath.functions.union
 import dev.ohs.fhir.fhirpath.model.FhirModelNavigator
@@ -26,12 +24,15 @@ import dev.ohs.fhir.fhirpath.operators.and
 import dev.ohs.fhir.fhirpath.operators.`as`
 import dev.ohs.fhir.fhirpath.operators.compare
 import dev.ohs.fhir.fhirpath.operators.concat
+import dev.ohs.fhir.fhirpath.operators.contains
 import dev.ohs.fhir.fhirpath.operators.div
 import dev.ohs.fhir.fhirpath.operators.division
 import dev.ohs.fhir.fhirpath.operators.equal
 import dev.ohs.fhir.fhirpath.operators.equivalent
 import dev.ohs.fhir.fhirpath.operators.implies
+import dev.ohs.fhir.fhirpath.operators.`in`
 import dev.ohs.fhir.fhirpath.operators.`is`
+import dev.ohs.fhir.fhirpath.operators.itemsEqual
 import dev.ohs.fhir.fhirpath.operators.mod
 import dev.ohs.fhir.fhirpath.operators.multiplication
 import dev.ohs.fhir.fhirpath.operators.ofType
@@ -42,6 +43,7 @@ import dev.ohs.fhir.fhirpath.parsers.fhirpathBaseVisitor
 import dev.ohs.fhir.fhirpath.parsers.fhirpathParser
 import dev.ohs.fhir.fhirpath.types.FhirPathDate
 import dev.ohs.fhir.fhirpath.types.FhirPathDateTime
+import dev.ohs.fhir.fhirpath.types.FhirPathDecimal
 import dev.ohs.fhir.fhirpath.types.FhirPathQuantity
 import dev.ohs.fhir.fhirpath.types.FhirPathTime
 import dev.ohs.fhir.fhirpath.types.FhirPathTypeResolver
@@ -66,12 +68,12 @@ internal class FhirPathEvaluator(
   val fhirPathTypeResolver: FhirPathTypeResolver,
   val fhirModelNavigator: FhirModelNavigator,
   val strictMode: Boolean = false,
-  context: Any? = null,
+  val context: Any? = null,
   variables: Map<String, Any?> = emptyMap(),
 ) : fhirpathBaseVisitor<Collection<Any>>() {
   private val resource: Any? = context
   private val contextStack = ArrayDeque<Collection<Any>>()
-  private val thisStack = ArrayDeque<Any>()
+  private val thisStack = ArrayDeque<Any?>()
   private val indexStack = ArrayDeque<Int>()
   private val totalStack = ArrayDeque<Collection<Any>>()
   private val variables = mutableMapOf<String, Any?>()
@@ -132,7 +134,7 @@ internal class FhirPathEvaluator(
         when (item) {
           is Int -> listOf(-item)
           is Long -> listOf(-item)
-          is BigDecimal -> listOf(-item)
+          is FhirPathDecimal -> listOf(-item)
           is FhirPathQuantity -> listOf(item.negate())
           else -> error("Polarity expression cannot be applied to: $item")
         }
@@ -234,18 +236,8 @@ internal class FhirPathEvaluator(
     val left = visit(ctx.expression(0)!!)
     val right = visit(ctx.expression(1)!!)
     return when (val op = ctx.getChild(1)!!.text) {
-      "in" ->
-        listOf(
-          right
-            .map { it.toFhirPathType(fhirPathTypeResolver) }
-            .contains(left.single().toFhirPathType(fhirPathTypeResolver))
-        )
-      "contains" ->
-        listOf(
-          left
-            .map { it.toFhirPathType(fhirPathTypeResolver) }
-            .contains(right.single().toFhirPathType(fhirPathTypeResolver))
-        )
+      "in" -> `in`(left, right, fhirPathTypeResolver)
+      "contains" -> contains(left, right, fhirPathTypeResolver)
       else -> error("Unknown membership operator: $op")
     }
   }
@@ -296,7 +288,7 @@ internal class FhirPathEvaluator(
   override fun visitNumberLiteral(ctx: fhirpathParser.NumberLiteralContext): Collection<Any> {
     val numberText = ctx.text
     return if (numberText.contains('.')) {
-      listOf(numberText.toBigDecimalPreservingScale())
+      listOf(FhirPathDecimal.fromString(numberText))
     } else {
       listOf(numberText.toInt())
     }
@@ -318,7 +310,7 @@ internal class FhirPathEvaluator(
   }
 
   override fun visitQuantityLiteral(ctx: fhirpathParser.QuantityLiteralContext): Collection<Any> {
-    val number = ctx.quantity().NUMBER().text.toBigDecimal()
+    val number = FhirPathDecimal.fromString(ctx.quantity().NUMBER().text)
     val unit = ctx.quantity().unit()?.text!!
     val pair = (number to unit)
     return listOf(FhirPathQuantity(value = pair.first, unit = pair.second))
@@ -336,7 +328,9 @@ internal class FhirPathEvaluator(
         ?: error("Invalid external constant")
 
     return when {
+      name == "context" -> context?.let { listOf(it) } ?: emptyList()
       name == "resource" -> resource?.let { listOf(it) } ?: emptyList()
+      name == "rootResource" -> resource?.let { listOf(it) } ?: emptyList()
       name == "sct" -> listOf("http://snomed.info/sct")
       name == "loinc" -> listOf("http://loinc.org")
       name == "ucum" -> listOf("http://unitsofmeasure.org")
@@ -404,13 +398,15 @@ internal class FhirPathEvaluator(
         // N.B. this function is implemented here due to its short-circuiting behavior.
         check(context.size <= 1) { "iif cannot be called on a collection with more than 1 item" }
         val params = functionNode.paramList()!!.expression()
-        val criterion = visit(params[0])
-        check(criterion.size <= 1) { "iif cannot be called with multiple expressions" }
-        return when (criterion.singleOrNull()) {
-          true -> visit(params[1])
-          false,
-          null -> params.getOrNull(2)?.let { visit(it) } ?: emptyList()
-          else -> error("iif criterion must evaluate to a Boolean")
+        return evaluateWithThis(context.singleOrNull()) {
+          val criterion = visit(params[0])
+          check(criterion.size <= 1) { "iif cannot be called with multiple expressions" }
+          when (criterion.singleOrNull()) {
+            true -> visit(params[1])
+            false,
+            null -> params.getOrNull(2)?.let { visit(it) } ?: emptyList()
+            else -> error("iif criterion must evaluate to a Boolean")
+          }
         }
       }
       "exists" -> {
@@ -483,12 +479,7 @@ internal class FhirPathEvaluator(
               finalResults.add(result)
               queue.addLast(result)
             } else {
-              if (
-                finalResults.none {
-                  it.toFhirPathType(fhirPathTypeResolver) ==
-                    result.toFhirPathType(fhirPathTypeResolver)
-                }
-              ) {
+              if (finalResults.none { itemsEqual(it, result, fhirPathTypeResolver) == true }) {
                 finalResults.add(result)
               }
             }
@@ -602,7 +593,7 @@ internal class FhirPathEvaluator(
           if (ctx.getParent() is fhirpathParser.InvocationExpressionContext) {
             context
           } else {
-            listOf(thisStack.last())
+            thisStack.lastOrNull()?.let { listOf(it) } ?: emptyList()
           }
         val params = functionNode.paramList()?.expression()?.flatMap { visit(it) } ?: emptyList()
         receiver.invoke(functionName, params, now, fhirPathTypeResolver, fhirModelNavigator)
@@ -611,7 +602,7 @@ internal class FhirPathEvaluator(
   }
 
   override fun visitThisInvocation(ctx: fhirpathParser.ThisInvocationContext): Collection<Any> {
-    return listOf(thisStack.last())
+    return thisStack.lastOrNull()?.let { listOf(it) } ?: emptyList()
   }
 
   override fun visitIndexInvocation(ctx: fhirpathParser.IndexInvocationContext): Collection<Any> {
@@ -636,9 +627,13 @@ internal class FhirPathEvaluator(
   }
 
   /** Evaluates a block with the given item pushed onto thisStack. */
-  private fun evaluateWithThis(item: Any, block: () -> Any?): Any? {
+  private inline fun <R> evaluateWithThis(item: Any?, block: () -> R): R {
     thisStack.addLast(item)
-    return block().also { thisStack.removeLast() }
+    try {
+      return block()
+    } finally {
+      thisStack.removeLast()
+    }
   }
 
   private inline fun <R> withIterationScope(
@@ -664,7 +659,7 @@ internal class FhirPathEvaluator(
 
 /** Returns a new [FhirPathQuantity] object with the numeric value negated. */
 private fun FhirPathQuantity.negate(): FhirPathQuantity =
-  FhirPathQuantity(value = value?.negate(), unit = unit)
+  FhirPathQuantity(value = value?.unaryMinus(), unit = unit)
 
 /** See [specification](https://hl7.org/fhirpath/STU3/en/#string). */
 private fun unescapeFhirPathString(string: String) =

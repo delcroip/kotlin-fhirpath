@@ -16,18 +16,17 @@
 
 package dev.ohs.fhir.fhirpath.functions
 
-import com.ionspin.kotlin.bignum.decimal.BigDecimal
-import com.ionspin.kotlin.bignum.decimal.toBigDecimal
 import dev.ohs.fhir.fhirpath.isValidUcumUnit
-import dev.ohs.fhir.fhirpath.operators.DECIMAL_MODE
+import dev.ohs.fhir.fhirpath.toBigDecimalOrNullPreservingScale
 import dev.ohs.fhir.fhirpath.toEqualCanonicalized
 import dev.ohs.fhir.fhirpath.toFhirPathType
-import dev.ohs.fhir.fhirpath.toPlainStringPreservingDecimalPlaces
 import dev.ohs.fhir.fhirpath.types.FhirPathDate
 import dev.ohs.fhir.fhirpath.types.FhirPathDateTime
+import dev.ohs.fhir.fhirpath.types.FhirPathDecimal
 import dev.ohs.fhir.fhirpath.types.FhirPathQuantity
 import dev.ohs.fhir.fhirpath.types.FhirPathTime
 import dev.ohs.fhir.fhirpath.types.FhirPathTypeResolver
+import dev.ohs.fhir.fhirpath.types.toFhirPathDecimal
 import kotlinx.datetime.LocalTime
 
 /**
@@ -64,10 +63,10 @@ internal fun Collection<Any>.toBoolean(
         0 -> listOf(false)
         else -> emptyList()
       }
-    is BigDecimal ->
+    is FhirPathDecimal ->
       when (value) {
-        BigDecimal.ONE -> listOf(true)
-        BigDecimal.ZERO -> listOf(false)
+        FhirPathDecimal.ONE -> listOf(true)
+        FhirPathDecimal.ZERO -> listOf(false)
         else -> emptyList()
       }
     is String ->
@@ -111,6 +110,13 @@ internal fun Collection<Any>.toInteger(
 
   return when (val value = single().toFhirPathType(fhirPathTypeResolver)) {
     is Int -> listOf(value)
+    is Long -> {
+      if (value in Int.MIN_VALUE..Int.MAX_VALUE) {
+        listOf(value.toInt())
+      } else {
+        emptyList()
+      }
+    }
     is String -> {
       value.toIntOrNull()?.let { listOf(it) } ?: emptyList()
     }
@@ -252,17 +258,19 @@ internal fun Collection<Any>.convertsToDateTime(
 /** See [specification](https://hl7.org/fhirpath/STU3/en/#todecimal--decimal). */
 internal fun Collection<Any>.toDecimal(
   fhirPathTypeResolver: FhirPathTypeResolver
-): Collection<BigDecimal> {
+): Collection<FhirPathDecimal> {
   check(size <= 1) { "toDecimal() cannot be called on a collection with more than 1 item" }
 
   if (isEmpty()) return emptyList()
 
   return when (val value = single().toFhirPathType(fhirPathTypeResolver)) {
-    is BigDecimal -> listOf(value)
-    is Int -> listOf(value.toBigDecimal())
-    is Boolean -> listOf(if (value) BigDecimal.ONE else BigDecimal.ZERO)
+    is FhirPathDecimal -> listOf(value)
+    is Int -> listOf(value.toFhirPathDecimal())
+    is Long -> listOf(value.toFhirPathDecimal())
+    is Boolean -> listOf(if (value) FhirPathDecimal.ONE else FhirPathDecimal.ZERO)
     is String -> {
-      value.toDoubleOrNull()?.let { listOf(it.toBigDecimal()) } ?: emptyList()
+      value.toBigDecimalOrNullPreservingScale()?.let { listOf(FhirPathDecimal.fromBigDecimal(it)) }
+        ?: emptyList()
     }
     else -> emptyList()
   }
@@ -288,61 +296,49 @@ internal fun Collection<Any>.toQuantity(
 
   if (isEmpty()) return emptyList()
 
-  return when (val item = single().toFhirPathType(fhirPathTypeResolver)) {
-    is Int -> {
-      val pair = (item.toBigDecimal() to DEFAULT_UNIT)
-      listOf(FhirPathQuantity(value = pair.first, unit = pair.second))
-    }
-    is Long -> {
-      val pair1 = (item.toBigDecimal() to DEFAULT_UNIT)
-      listOf(FhirPathQuantity(value = pair1.first, unit = pair1.second))
-    }
-    is BigDecimal -> {
-      val pair1 = (item to DEFAULT_UNIT)
-      listOf(FhirPathQuantity(value = pair1.first, unit = pair1.second))
-    }
-    is FhirPathQuantity -> {
-      if (targetUnit != null) {
-        convertQuantityUnit(item, targetUnit)
-      } else {
-        listOf(item)
-      }
-    }
-    is String -> {
-      val match = QUANTITY_REGEX.matchEntire(item.trim()) ?: return emptyList()
-      val value = match.groups["value"]?.value!!.toBigDecimal()
-      val unit = match.groups["unit"]?.value?.trim()
-      val calendarDuration = match.groups["time"]?.value
+  val quantity =
+    when (val item = single().toFhirPathType(fhirPathTypeResolver)) {
+      is Int -> FhirPathQuantity(value = item.toFhirPathDecimal(), unit = DEFAULT_UNIT)
+      is Long -> FhirPathQuantity(value = item.toFhirPathDecimal(), unit = DEFAULT_UNIT)
+      is FhirPathDecimal -> FhirPathQuantity(value = item, unit = DEFAULT_UNIT)
+      is FhirPathQuantity -> item
+      is String -> {
+        val match = QUANTITY_REGEX.matchEntire(item.trim()) ?: return emptyList()
+        val value = FhirPathDecimal.fromString(match.groups["value"]?.value!!)
+        val unit = match.groups["unit"]?.value?.trim()
+        val calendarDuration = match.groups["time"]?.value
 
-      val parsedUnit: String =
-        when {
-          unit != null -> {
-            if (!isValidUcumUnit(unit)) {
-              return emptyList()
+        val parsedUnit: String =
+          when {
+            unit != null -> {
+              if (!isValidUcumUnit(unit)) {
+                return emptyList()
+              }
+              "'$unit'"
             }
-            "'$unit'"
-          }
-          calendarDuration != null -> {
-            if (calendarDuration !in CALENDAR_DURATION_LIST) {
-              return emptyList()
+            calendarDuration != null -> {
+              if (calendarDuration !in CALENDAR_DURATION_LIST) {
+                return emptyList()
+              }
+              calendarDuration
             }
-            calendarDuration
+            else -> DEFAULT_UNIT
           }
-          else -> DEFAULT_UNIT
-        }
 
-      val parsedQuantity = FhirPathQuantity(value = value, unit = parsedUnit)
-      if (targetUnit != null) {
-        convertQuantityUnit(parsedQuantity, targetUnit)
-      } else {
-        listOf(parsedQuantity)
+        FhirPathQuantity(value = value, unit = parsedUnit)
       }
+      is Boolean ->
+        FhirPathQuantity(
+          value = if (item) FhirPathDecimal.ONE else FhirPathDecimal.ZERO,
+          unit = DEFAULT_UNIT,
+        )
+      else -> return emptyList()
     }
-    is Boolean -> {
-      val pair1 = ((if (item) BigDecimal.ONE else BigDecimal.ZERO) to DEFAULT_UNIT)
-      listOf(FhirPathQuantity(value = pair1.first, unit = pair1.second))
-    }
-    else -> emptyList()
+
+  return if (targetUnit != null) {
+    convertQuantityUnit(quantity, targetUnit)
+  } else {
+    listOf(quantity)
   }
 }
 
@@ -350,13 +346,14 @@ internal fun Collection<Any>.toQuantity(
  * See [specification](https://hl7.org/fhirpath/STU3/en/#convertstoquantityunit--string--boolean).
  */
 internal fun Collection<Any>.convertsToQuantity(
-  fhirPathTypeResolver: FhirPathTypeResolver
+  targetUnit: String? = null,
+  fhirPathTypeResolver: FhirPathTypeResolver,
 ): Collection<Boolean> {
   check(size <= 1) { "convertsToQuantity() cannot be called on a collection with more than 1 item" }
 
   if (isEmpty()) return emptyList()
 
-  return listOf(toQuantity(targetUnit = null, fhirPathTypeResolver).isNotEmpty())
+  return listOf(toQuantity(targetUnit = targetUnit, fhirPathTypeResolver).isNotEmpty())
 }
 
 /** See [specification](https://hl7.org/fhirpath/STU3/en/#tostring--string). */
@@ -371,13 +368,13 @@ internal fun Collection<Any>.toStringFun(
     is String -> listOf(item)
     is Int -> listOf(item.toString())
     is Long -> listOf(item.toString())
-    is BigDecimal -> listOf(item.toPlainStringPreservingDecimalPlaces())
+    is FhirPathDecimal -> listOf(item.toString())
     is FhirPathDate -> listOf(item.toString())
     is FhirPathDateTime -> listOf(item.toString())
     is FhirPathTime -> listOf(item.toString())
     is Boolean -> listOf(item.toString())
     is FhirPathQuantity -> {
-      listOf("${item.value?.toPlainStringPreservingDecimalPlaces()} ${item.unit}")
+      listOf("${item.value} ${item.unit}")
     }
     else -> emptyList()
   }
@@ -403,7 +400,7 @@ internal fun Collection<Any>.convertsToString(
       is String,
       is Int,
       is Long,
-      is BigDecimal,
+      is FhirPathDecimal,
       is FhirPathDate,
       is FhirPathDateTime,
       is FhirPathTime,
@@ -479,19 +476,16 @@ private fun convertQuantityUnit(
 
   val sourceCanonical = quantity.toEqualCanonicalized()
   val targetCanonical =
-    FhirPathQuantity(value = BigDecimal.ONE, unit = targetUnit).toEqualCanonicalized()
+    FhirPathQuantity(value = FhirPathDecimal.ONE, unit = targetUnit).toEqualCanonicalized()
 
   val sourceCanonicalUnit = sourceCanonical.unit ?: return emptyList()
   val targetCanonicalUnit = targetCanonical.unit ?: return emptyList()
   val sourceCanonicalValue = sourceCanonical.value ?: return emptyList()
   val targetCanonicalScale = targetCanonical.value ?: return emptyList()
 
-  if (
-    sourceCanonicalUnit != targetCanonicalUnit ||
-      targetCanonicalScale.compareTo(BigDecimal.ZERO) == 0
-  ) {
+  if (sourceCanonicalUnit != targetCanonicalUnit || targetCanonicalScale.isZero()) {
     return emptyList()
   }
-  val convertedValue = sourceCanonicalValue.divide(targetCanonicalScale, DECIMAL_MODE)
+  val convertedValue = sourceCanonicalValue / targetCanonicalScale
   return listOf(FhirPathQuantity(value = convertedValue, unit = targetUnit))
 }

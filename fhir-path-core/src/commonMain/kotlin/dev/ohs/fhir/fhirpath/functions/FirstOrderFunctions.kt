@@ -85,7 +85,8 @@ internal fun Collection<Any>.invoke(
     "toDecimal" -> this.toDecimal(fhirPathTypeResolver)
     "convertsToDecimal" -> this.convertsToDecimal(fhirPathTypeResolver)
     "toQuantity" -> this.toQuantity(params.firstOrNull()?.toString(), fhirPathTypeResolver)
-    "convertsToQuantity" -> this.convertsToQuantity(fhirPathTypeResolver)
+    "convertsToQuantity" ->
+      this.convertsToQuantity(params.firstOrNull()?.toString(), fhirPathTypeResolver)
     "toString" -> this.toStringFun(fhirPathTypeResolver)
     "convertsToString" -> this.convertsToString(fhirPathTypeResolver)
     "toTime" -> this.toTime(fhirPathTypeResolver)
@@ -94,6 +95,7 @@ internal fun Collection<Any>.invoke(
     // String manipulation
     // https://hl7.org/fhirpath/STU3/en/#string-manipulation
     "indexOf" -> this.indexOf(params, fhirPathTypeResolver)
+    "lastIndexOf" -> this.lastIndexOf(params, fhirPathTypeResolver)
     "substring" -> this.substring(params, fhirPathTypeResolver)
     "startsWith" -> this.startsWith(params, fhirPathTypeResolver)
     "endsWith" -> this.endsWith(params, fhirPathTypeResolver)
@@ -179,6 +181,7 @@ internal fun Collection<Any>.invoke(
     // https://hl7.org/fhir/fhirpath.html#functions
     "extension" -> this.extension(params, fhirModelNavigator)
     "hasValue" -> this.hasValue(fhirPathTypeResolver, fhirModelNavigator)
+    "conformsTo" -> this.conformsTo(params, fhirPathTypeResolver)
 
     else -> error("Function '$functionName' is not implemented.")
   }

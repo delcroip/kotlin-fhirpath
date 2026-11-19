@@ -16,8 +16,8 @@
 
 package dev.ohs.fhir.fhirpath
 
-import com.ionspin.kotlin.bignum.decimal.toBigDecimal
 import dev.ohs.fhir.model.r4.Decimal
+import dev.ohs.fhir.model.r4.FhirDecimal
 import dev.ohs.fhir.model.r4.Quantity
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,7 +36,7 @@ class ComparableTest {
 
   @Test
   fun `quantity without a code returns empty`() {
-    val quantity = Quantity(value = Decimal(value = 5.toBigDecimal()))
+    val quantity = Quantity(value = Decimal(value = FhirDecimal.fromString("5")))
     assertEquals(
       emptyList(),
       fhirPathEngine.evaluateExpression("comparable(1 'kg')", quantity).toList(),
@@ -72,6 +72,34 @@ class ComparableTest {
     assertEquals(
       listOf(true),
       fhirPathEngine.evaluateExpression("(1 '[s]').comparable(1 '[s]')", null).toList(),
+    )
+  }
+
+  @Test
+  fun `different unknown units comparable returns false`() {
+    assertEquals(
+      listOf(false),
+      fhirPathEngine.evaluateExpression("(1 '[s]').comparable(1 '[x]')", null).toList(),
+    )
+  }
+
+  @Test
+  fun `compound units with equivalent dimensions are comparable`() {
+    assertEquals(
+      listOf(true),
+      fhirPathEngine.evaluateExpression("(4.0 'g' / 2.0 'm').comparable(2 'g/m')", null).toList(),
+    )
+  }
+
+  @Test
+  fun `compound units with equivalent dimensions can be compared with relational operators`() {
+    assertEquals(
+      listOf(true),
+      fhirPathEngine.evaluateExpression("(4.0 'g' / 2.0 'm') > 1 'g/m'", null).toList(),
+    )
+    assertEquals(
+      listOf(true),
+      fhirPathEngine.evaluateExpression("(4.0 'g' / 2.0 'm') >= 2 'g/m'", null).toList(),
     )
   }
 }

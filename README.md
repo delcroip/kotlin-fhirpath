@@ -31,19 +31,19 @@ For the full conformance analysis, see the [conformance](docs/conformance.md) do
 
 ### FHIRPath specification
 
-The library implements [FHIRPath Specification v3.0.0](https://hl7.org/fhirpath/STU3/en/).
+The core library (`fhir-path-core`) is model-agnostic and implements
+[FHIRPath Specification v3.0.0](https://hl7.org/fhirpath/STU3/en/).
 
 See [FHIRPath specification conformance](docs/conformance.md#fhirpath-specification) for
 feature-by-feature implementation status.
 
 ### FHIRPath in FHIR specification
 
-Our core expression evaluator (`fhir-path-core`) is model-agnostic and evaluates expressions
-against FHIR R4, R4B, and R5 resources. Support for future FHIR versions will be added.
-
-For using FHIRPath with FHIR resources, including accessing choice elements, referencing FHIR types,
-and FHIR-specific variables and functions, we implement the
-[FHIRPath](https://hl7.org/fhir/R5/fhirpath.html) section in FHIR R5.
+Besides the FHIRPath specification, each FHIR version ([R4](https://hl7.org/fhir/R4/fhirpath.html),
+[R4B](https://hl7.org/fhir/R4B/fhirpath.html), [R5](https://hl7.org/fhir/R5/fhirpath.html))
+also defines additional variables, functions, and operators in FHIRPath. Since later FHIR versions
+primarily expand and refine earlier definitions, this library only implements the definitions
+from the latest FHIR version.
 
 See [FHIRPath in FHIR specification conformance](docs/conformance.md#fhirpath-in-fhir-specification)
 for domain-specific implementation details.
@@ -159,7 +159,7 @@ The following table lists the chosen internal types for the FHIRPath primitive t
 | String                                                                      | kotlin.String                                                                 |
 | Integer                                                                     | kotlin.Int                                                                    |
 | Long                                                                        | kotlin.Long                                                                   |
-| Decimal                                                                     | com.ionspin.kotlin.bignum.decimal.BigDecimal                                  |
+| Decimal                                                                     | FhirPathDecimal                                                               |
 | Date                                                                        | FhirPathDate                                                                  |
 | DateTime                                                                    | FhirPathDateTime                                                              |
 | Time                                                                        | FhirPathTime                                                                  |
@@ -184,6 +184,19 @@ To balance these two requirements, such conversions are performed last-minute on
 that trigger conversion include equality (`=`), comparison (`<`, `<=`, `>`, `>=`), membership (`in`,
 `contains`), and set functions (`union`, `distinct`, `intersect`, `exclude`, `subsetOf`,
 `supersetOf`).
+
+### Profile validation
+
+The `conformsTo()` function supports the base FHIR profiles
+(`http://hl7.org/fhir/StructureDefinition/<Type>`): the input element's type is compared to the
+type named by the structure. Other profiles, such as those defined in implementation guides (e.g.
+the US Core Patient profile), would require profile validation, which is not implemented. Passing
+such a profile URL yields an empty result[^2].
+
+[^2]: R4 and R4B require an error for an unresolvable structure
+(https://hl7.org/fhir/R4/fhirpath.html#functions), revised to an empty result in R5
+(https://hl7.org/fhir/R5/fhirpath.html#functions). Therefore `testConformsTo3` is skipped in the
+[test conformance](docs/conformance.md#test-conformance) suite.
 
 ### Timezone offset in date time values
 
@@ -283,6 +296,14 @@ run-time property access modes:
   property.
 * **Strict mode:** Throws an `IllegalStateException` when accessing an undefined property.
 
+### Parsed expression caching
+
+By default, `FhirPathEngine` caches up to 1,000 parsed FHIRPath expression trees in memory so that
+repeatedly evaluated expressions (such as search parameter indexing or questionnaire expressions) do
+not re-run the ANTLR lexer and parser on every invocation. On memory-constrained platforms or
+workloads with one-off expressions, caching can be disabled by passing
+`cacheParsedExpressions = false`.
+
 ## User Guide
 
 ### Adding the library dependency to your project
@@ -319,10 +340,10 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             // Use only the FHIR version(s) you need:
-            implementation("dev.ohs.fhir:fhir-path-r4:1.0.0-beta05")
+            implementation("dev.ohs.fhir:fhir-path-r4:1.0.0-beta06")
 
             // Or include all versions at once:
-            // implementation("dev.ohs.fhir:fhir-path:1.0.0-beta05")
+            // implementation("dev.ohs.fhir:fhir-path:1.0.0-beta06")
         }
     }
 }
@@ -337,10 +358,10 @@ For Android projects, add the dependency to the `dependencies` block in the modu
 // e.g., app/build.gradle.kts
 dependencies {
     // Use only the FHIR version(s) you need:
-    implementation("dev.ohs.fhir:fhir-path-r4:1.0.0-beta05")
+    implementation("dev.ohs.fhir:fhir-path-r4:1.0.0-beta06")
 
     // Or include all versions at once:
-    // implementation("dev.ohs.fhir:fhir-path:1.0.0-beta05")
+    // implementation("dev.ohs.fhir:fhir-path:1.0.0-beta06")
 }
 ```
 
@@ -353,7 +374,10 @@ Create a `FhirPathEngine` for the FHIR version you are working with (R4, R4B, or
 val fhirPathEngine = FhirPathEngine.forR4()
 
 // Create an engine with strict mode enabled (throws on invalid property access)
-val fhirPathEngineStrict = FhirPathEngine.forR4(strictMode = true)
+val fhirPathEngineStrict = FhirPathEngine.forR4 { strictMode = true }
+
+// Create an engine with parsed expression caching disabled
+val fhirPathEngineUncached = FhirPathEngine.forR4 { cacheParsedExpressions = false }
 ```
 
 ### Evaluating FHIRPath expressions
@@ -374,7 +398,7 @@ val results = fhirPathEngine.evaluateExpression("name.given", patient)
 // ["Peter", "James", "Jim", "Peter", "James"]
 
 // In strict mode, accessing an unrecognized property throws an IllegalStateException
-val fhirPathEngineStrict = FhirPathEngine.forR4(strictMode = true)
+val fhirPathEngineStrict = FhirPathEngine.forR4 { strictMode = true }
 strictEngine.evaluateExpression("name.given1", patient) // Throws IllegalStateException
 ```
 
@@ -408,13 +432,14 @@ You can also run individual generation tasks locally:
 
 This project distinguishes between two types of tests:
 
-* **Spec-based tests**: Driven by
-  [FhirPathEngineTest.kt](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/FhirPathEngineTest.kt),
+* **Spec-based conformance tests**: Driven by
+  [ConformanceSuite.kt](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/ConformanceSuite.kt)
+  and run per FHIR version by `ConformanceR4Test`, `ConformanceR4BTest` and `ConformanceR5Test`,
   these load the official [test cases](https://github.com/FHIR/fhir-test-cases) from
-  [third_party/fhir-test-cases/](third_party/fhir-test-cases/). As they require local file access, they only run on **JVM**
-  and **Android** targets. On other platform targets, file loading is stubbed out. See
-  [Test Conformance](docs/conformance.md#test-conformance) for an analysis of known test suite
-  divergences.
+  [third_party/fhir-test-cases/](third_party/fhir-test-cases/). As they require local file access,
+  they only run on **JVM** and **Android** targets. On other platform targets, file loading is
+  stubbed out. See [Test Conformance](docs/conformance.md#test-conformance) for an analysis of known
+  test suite divergences.
 * **Unit tests**: Located in
   [fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/),
   these verify specific, platform-agnostic behaviors and run across all targets:
@@ -422,6 +447,8 @@ This project distinguishes between two types of tests:
     Tests nested aggregates.
   * [EnvironmentVariablesTest.kt](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/EnvironmentVariablesTest.kt):
     Tests user-defined external variables.
+  * [ParsedExpressionCacheTest.kt](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/ParsedExpressionCacheTest.kt):
+    Tests caching of parsed FHIRPath expressions.
   * [TraceTest.kt](fhir-path/src/commonTest/kotlin/dev/ohs/fhir/fhirpath/TraceTest.kt): Verifies the
     logging output of the `trace()` function.
 

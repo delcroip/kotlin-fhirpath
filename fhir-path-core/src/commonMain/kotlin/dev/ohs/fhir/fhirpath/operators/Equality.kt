@@ -18,12 +18,12 @@ package dev.ohs.fhir.fhirpath.operators
 
 import com.ionspin.kotlin.bignum.decimal.BigDecimal
 import dev.ohs.fhir.fhirpath.asComparableOperands
-import dev.ohs.fhir.fhirpath.parseUcumUnit
 import dev.ohs.fhir.fhirpath.toEqualCanonicalized
 import dev.ohs.fhir.fhirpath.toEquivalentCanonicalized
 import dev.ohs.fhir.fhirpath.toFhirPathType
 import dev.ohs.fhir.fhirpath.types.FhirPathDate
 import dev.ohs.fhir.fhirpath.types.FhirPathDateTime
+import dev.ohs.fhir.fhirpath.types.FhirPathDecimal
 import dev.ohs.fhir.fhirpath.types.FhirPathQuantity
 import dev.ohs.fhir.fhirpath.types.FhirPathTime
 import dev.ohs.fhir.fhirpath.types.FhirPathTypeResolver
@@ -93,7 +93,7 @@ internal fun equivalent(
 }
 
 /** See [specification](https://hl7.org/fhirpath/STU3/en/#-equals). */
-private fun itemsEqual(
+internal fun itemsEqual(
   left: Any,
   right: Any,
   fhirPathTypeResolver: FhirPathTypeResolver,
@@ -112,7 +112,7 @@ private fun itemsEqual(
     leftFhirPath is Long && rightFhirPath is Long -> {
       leftFhirPath == rightFhirPath
     }
-    leftFhirPath is BigDecimal && rightFhirPath is BigDecimal -> {
+    leftFhirPath is FhirPathDecimal && rightFhirPath is FhirPathDecimal -> {
       leftFhirPath == rightFhirPath
     }
     leftFhirPath is Boolean && rightFhirPath is Boolean -> {
@@ -130,9 +130,7 @@ private fun itemsEqual(
     }
     leftFhirPath is FhirPathQuantity && rightFhirPath is FhirPathQuantity -> {
       with(leftFhirPath.toEqualCanonicalized() to rightFhirPath.toEqualCanonicalized()) {
-        val leftUnits = parseUcumUnit(first.unit!!)
-        val rightUnits = parseUcumUnit(second.unit!!)
-        if (leftUnits != rightUnits) return null
+        if (first.unit != second.unit) return null
         return first.value == second.value
       }
     }
@@ -162,12 +160,18 @@ private fun itemsEquivalent(
     leftFhirPath is Long && rightFhirPath is Long -> {
       leftFhirPath == rightFhirPath
     }
-    leftFhirPath is BigDecimal && rightFhirPath is BigDecimal -> {
+    leftFhirPath is FhirPathDecimal && rightFhirPath is FhirPathDecimal -> {
       // Determine decimal equivalence to the precision of the less precise operand
       val minLastDigitPosition =
-        minOf(leftFhirPath.lastDigitPosition, rightFhirPath.lastDigitPosition)
-      leftFhirPath.roundToDigitPosition(minLastDigitPosition, DECIMAL_MODE.roundingMode) ==
-        rightFhirPath.roundToDigitPosition(minLastDigitPosition, DECIMAL_MODE.roundingMode)
+        minOf(leftFhirPath.bigDecimal.lastDigitPosition, rightFhirPath.bigDecimal.lastDigitPosition)
+      leftFhirPath.bigDecimal.roundToDigitPosition(
+        minLastDigitPosition,
+        DECIMAL_MODE.roundingMode,
+      ) ==
+        rightFhirPath.bigDecimal.roundToDigitPosition(
+          minLastDigitPosition,
+          DECIMAL_MODE.roundingMode,
+        )
     }
     leftFhirPath is Boolean && rightFhirPath is Boolean -> {
       leftFhirPath == rightFhirPath

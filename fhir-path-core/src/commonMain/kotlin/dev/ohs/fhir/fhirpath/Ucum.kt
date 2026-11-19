@@ -16,8 +16,8 @@
 
 package dev.ohs.fhir.fhirpath
 
-import com.ionspin.kotlin.bignum.decimal.toBigDecimal
 import dev.ohs.fhir.fhirpath.types.FhirPathQuantity
+import dev.ohs.fhir.fhirpath.types.toFhirPathDecimal
 import dev.ohs.fhir.fhirpath.ucum.BaseUnit
 import dev.ohs.fhir.fhirpath.ucum.Prefix
 import dev.ohs.fhir.fhirpath.ucum.Unit
@@ -26,7 +26,7 @@ import kotlin.math.pow
 /**
  * Reduces this quantity to base UCUM units for FHIRPath `=` (equal) comparisons.
  *
- * For example: `1 'kg'` becomes `1000 'g1'`, and `1 'h'` becomes `3600 's1'`.
+ * For example: `1 'kg'` becomes `1000 'g'`, and `1 'h'` becomes `3600 's'`.
  *
  * Calendar keywords up to `week` (such as `weeks` to `'wk'`) are converted, but `year` and `month`
  * are not. Their length in seconds varies (a month is 28 to 31 days, a year 365 or 366), so they
@@ -41,7 +41,7 @@ fun FhirPathQuantity.toEqualCanonicalized(): FhirPathQuantity =
 /**
  * Reduces this quantity to base UCUM units for FHIRPath `~` (equivalent) comparisons.
  *
- * For example: `1 'kg'` becomes `1000 'g1'`, and `1 'h'` becomes `3600 's1'`.
+ * For example: `1 'kg'` becomes `1000 'g'`, and `1 'h'` becomes `3600 's'`.
  *
  * Same as [toEqualCanonicalized], but also converts `year` (to `'a'`) and `month` (to `'mo'`) using
  * UCUM's nominal lengths. Equivalence tolerates that approximation, whereas equality does not.
@@ -144,7 +144,7 @@ private fun FhirPathQuantity.stripUcumPrefix(): FhirPathQuantity {
     val codeWithoutPrefix = code.removePrefix(prefix.code)
     if (codeWithoutPrefix in (BaseUnit.entries.map { it.code } + Unit.entries.map { it.code })) {
       return FhirPathQuantity(
-        value = value!! * 10.0.pow(prefix.power).toBigDecimal(),
+        value = value!! * 10.0.pow(prefix.power).toFhirPathDecimal(),
         unit = "'$codeWithoutPrefix'",
       )
     }
@@ -155,28 +155,29 @@ private fun FhirPathQuantity.stripUcumPrefix(): FhirPathQuantity {
 /**
  * Returns a new quantity value with a canonicalized unit string composed of base UCUM units.
  *
- * N.B. "1" will be appended to base units to make them comparable to the base unit strings of
- * derived units.
+ * An exponent of 1 is omitted, matching UCUM's own tables and fhir-ucum (`g`, `m.s-2`, `m2`).
  *
  * For example:
- * - 1.0 'h' -> 3600.0 's1'
- * - 1.0 'kg' -> 1000.0 'g1'
- * - 1.0 'g' -> 1.0 'g1' (to be comparable to kg and other units derived from grams)
+ * - 1.0 'h' -> 3600.0 's'
+ * - 1.0 'kg' -> 1000.0 'g'
+ * - 1.0 'N' -> 1000.0 'g.m.s-2'
  */
 private fun FhirPathQuantity.toCanonicalizedUcumUnit(): FhirPathQuantity {
   val unitCode = unit?.stripSingleQuotes() ?: return this
+  if (unitCode.isEmpty() || unit in listOf("year", "years", "month", "months")) return this
 
   // Process base units
   BaseUnit.fromString(unitCode)?.let {
-    return FhirPathQuantity(value = value!!, unit = "'${it.code}1'")
+    return FhirPathQuantity(value = value!!, unit = "'${it.code}'")
   }
 
   // Process derived units
   Unit.fromString(unitCode)?.let {
-    return FhirPathQuantity(value = value!! * it.scalar.toBigDecimal(), unit = "'${it.base}'")
+    return FhirPathQuantity(value = value!! * it.scalar.toFhirPathDecimal(), unit = "'${it.base}'")
   }
 
-  return this
+  // Normalize compound UCUM units (e.g., 'g/m' -> 'g.m-1')
+  return FhirPathQuantity(value = value, unit = formatUcumUnit(parseUcumUnit(unitCode)))
 }
 
 private fun String.stripSingleQuotes(): String {
@@ -211,7 +212,7 @@ private fun splitUcumComponents(unitString: String): List<String> {
  * - `"123"` → `null` (no unit letters)
  */
 private fun parseUnitAndExponent(component: String): Pair<String, Int>? {
-  val match = Regex("([a-zA-Z]+)(-?\\d*)").matchEntire(component) ?: return null
+  val match = Regex("([a-zA-Z]+|\\[[^\\]]+\\])(-?\\d*)").matchEntire(component) ?: return null
   val unit = match.groupValues[1]
   val exponentStr = match.groupValues[2]
   val exponent = if (exponentStr.isEmpty()) 1 else exponentStr.toInt()
